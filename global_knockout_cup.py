@@ -54,6 +54,32 @@ class TournamentOutcome:
     rounds: dict[str, tuple[Match, ...]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ProjectStatus:
+    done: tuple[str, ...]
+    next_steps: tuple[str, ...]
+    playable: bool
+    playability_note: str
+
+
+def get_project_status() -> ProjectStatus:
+    return ProjectStatus(
+        done=(
+            "211-team tournament generation with seeded strength profiles",
+            "Phase 1 knockout flow through Round of 64",
+            "Open redraw at 32 teams, then fixed rounds to champion",
+            "Penalty shootouts with early-finish and sudden-death logic",
+        ),
+        next_steps=(
+            "Add a simple CLI loop for match-by-match user interaction",
+            "Expose richer match logs for presentation layers",
+            "Add save/resume support for long tournament runs",
+        ),
+        playable=True,
+        playability_note="Playable now as an auto-simulated tournament run.",
+    )
+
+
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 

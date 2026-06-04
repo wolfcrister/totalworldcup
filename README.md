@@ -20,3 +20,9 @@ Minimal MVP tournament simulation for the **Global Knockout Cup** concept.
 ```bash
 python -m unittest discover -s tests -q
 ```
+
+## Current game readiness
+
+- **Done:** 211-team setup, full knockout progression, and tested penalty shootouts.
+- **Next:** interactive CLI flow, richer match logs, and save/resume support.
+- **Playable?** Yes — currently as an auto-simulated tournament run.
