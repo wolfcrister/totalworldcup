@@ -8,6 +8,7 @@ from global_knockout_cup import (
     Team,
     assign_regions_snake,
     generate_teams,
+    get_project_status,
 )
 
 
@@ -95,6 +96,14 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         self.assertEqual([team.seed for team in regions["B"]], [2, 7])
         self.assertEqual([team.seed for team in regions["C"]], [3, 6])
         self.assertEqual([team.seed for team in regions["D"]], [4, 5])
+
+    def test_project_status_reports_done_next_and_playability(self):
+        status = get_project_status()
+
+        self.assertTrue(status.playable)
+        self.assertIn("auto-simulated tournament", status.playability_note)
+        self.assertGreaterEqual(len(status.done), 4)
+        self.assertGreaterEqual(len(status.next_steps), 3)
 
 
 if __name__ == "__main__":
