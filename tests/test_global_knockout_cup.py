@@ -56,6 +56,18 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         self.assertEqual(result.score_b, 5)
         self.assertEqual(len(result.kicks), 14)
 
+    def test_shootout_integration_uses_real_probability_logic(self):
+        team_a = Team("A", seed=1, penalty_strength=0.9, goalkeeper_rating=0.8)
+        team_b = Team("B", seed=2, penalty_strength=0.4, goalkeeper_rating=0.3)
+        engine = PenaltyShootoutEngine(Random(7))
+
+        result = engine.shootout(team_a, team_b)
+
+        self.assertGreaterEqual(len(result.kicks), 6)
+        self.assertLessEqual(len(result.kicks), 20)
+        self.assertIn(result.winner, (team_a, team_b))
+        self.assertEqual(result.winner, team_a)
+
     def test_tournament_plan_and_progression_sizes_match_spec(self):
         cup = GlobalKnockoutCup(rng=Random(2))
         plan = cup.create_tournament_plan()

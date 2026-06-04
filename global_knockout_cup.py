@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from random import Random
 from typing import Callable, Iterable, Literal, Optional
 
@@ -84,7 +84,7 @@ def assign_regions_snake(
         offset = idx % len(regions)
         region_idx = offset if cycle % 2 == 0 else (len(regions) - 1 - offset)
         region_name = regions[region_idx]
-        region_map[region_name].append(Team(**{**team.__dict__, "region": region_name}))
+        region_map[region_name].append(replace(team, region=region_name))
     return {key: tuple(value) for key, value in region_map.items()}
 
 
@@ -166,7 +166,7 @@ class PenaltyShootoutEngine:
             score_a += int(scored_a)
             score_b += int(scored_b)
             if scored_a != scored_b:
-                winner = team_a if scored_a else team_b
+                winner = team_a if score_a > score_b else team_b
                 loser = team_b if winner == team_a else team_a
                 return ShootoutResult(winner, loser, score_a, score_b, tuple(kicks))
 
