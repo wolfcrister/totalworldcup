@@ -3,13 +3,17 @@ from random import Random
 from unittest.mock import patch
 
 from global_knockout_cup import (
+    Kick,
+    KickEvent,
     GlobalKnockoutCup,
     PenaltyShootoutEngine,
+    ShootoutResult,
     Team,
     assign_regions_snake,
     generate_teams,
     get_project_status,
 )
+from tournament_featured_mode import run_featured_tournament
 
 
 class GlobalKnockoutCupTests(unittest.TestCase):
@@ -69,6 +73,70 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         self.assertIn(result.winner, (team_a, team_b))
         self.assertEqual(result.winner, team_a)
 
+    def test_resolve_kick_timing_quality_influences_outcome(self):
+        shooter = Team("Shooter", seed=1, penalty_strength=0.5, goalkeeper_rating=0.5)
+        keeper = Team("Keeper", seed=2, penalty_strength=0.5, goalkeeper_rating=0.5)
+        engine = PenaltyShootoutEngine(Random(11))
+
+        with patch.object(engine.rng, "random", return_value=0.5):
+            low_timing_scored = engine.resolve_kick(
+                shooter,
+                keeper,
+                shot_direction="left",
+                keeper_dive="left",
+                kick_number_for_shooter=1,
+                timing_quality=0.0,
+            )
+            high_timing_scored = engine.resolve_kick(
+                shooter,
+                keeper,
+                shot_direction="left",
+                keeper_dive="left",
+                kick_number_for_shooter=1,
+                timing_quality=1.0,
+            )
+
+        self.assertFalse(low_timing_scored)
+        self.assertTrue(high_timing_scored)
+
+    def test_shootout_produces_event_stream(self):
+        team_a = Team("A", seed=1)
+        team_b = Team("B", seed=2)
+        engine = PenaltyShootoutEngine(Random(13))
+
+        result = engine.shootout(
+            team_a,
+            team_b,
+            chooser_a=lambda *_: "left",
+            chooser_b=lambda *_: "right",
+            timing_chooser_a=lambda *_: 0.8,
+            timing_chooser_b=lambda *_: 0.2,
+        )
+
+        self.assertEqual(len(result.events), len(result.kicks))
+        self.assertGreater(len(result.events), 0)
+        self.assertIn(result.events[0].phase, ("resolve",))
+        self.assertIsNotNone(result.events[0].timing_quality)
+        self.assertIn(result.events[-1].score_a, range(0, 11))
+        self.assertIn(result.events[-1].score_b, range(0, 11))
+
+    def test_shootout_uses_custom_keeper_dive_choosers(self):
+        team_a = Team("A", seed=1)
+        team_b = Team("B", seed=2)
+        engine = PenaltyShootoutEngine(Random(17))
+
+        result = engine.shootout(
+            team_a,
+            team_b,
+            chooser_a=lambda *_: "left",
+            chooser_b=lambda *_: "right",
+            dive_chooser_a=lambda *_: "centre",
+            dive_chooser_b=lambda *_: "centre",
+        )
+
+        self.assertGreaterEqual(len(result.kicks), 6)
+        self.assertTrue(all(event.dive_direction == "centre" for event in result.events))
+
     def test_tournament_plan_and_progression_sizes_match_spec(self):
         cup = GlobalKnockoutCup(rng=Random(2))
         plan = cup.create_tournament_plan()
@@ -104,6 +172,44 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         self.assertIn("auto-simulated tournament", status.playability_note)
         self.assertGreaterEqual(len(status.done), 4)
         self.assertGreaterEqual(len(status.next_steps), 3)
+
+    def test_featured_tournament_uses_realtime_for_featured_matches(self):
+        calls = {"count": 0}
+
+        def fake_featured_match(*_args, **kwargs):
+            calls["count"] += 1
+            human_team = kwargs["human_team"]
+            ai_team = kwargs["ai_team"]
+            return ShootoutResult(
+                winner=human_team,
+                loser=ai_team,
+                score_a=1,
+                score_b=0,
+                kicks=(Kick(human_team, "left", "right", True),),
+                events=(
+                    KickEvent(
+                        team=human_team,
+                        phase="resolve",
+                        shot_direction="left",
+                        dive_direction="right",
+                        timing_quality=0.8,
+                        scored=True,
+                        score_a=1,
+                        score_b=0,
+                        message="featured test",
+                    ),
+                ),
+            )
+
+        with patch("tournament_featured_mode.play_realtime_match", side_effect=fake_featured_match):
+            outcome = run_featured_tournament(featured_seed=1, auto=True, rng_seed=5)
+
+        self.assertEqual(outcome.champion.seed, 1)
+        self.assertEqual(calls["count"], 7)
+
+    def test_featured_tournament_invalid_seed_raises(self):
+        with self.assertRaises(ValueError):
+            run_featured_tournament(featured_seed=999, auto=True, rng_seed=1)
 
 
 if __name__ == "__main__":

@@ -32,12 +32,26 @@ class Kick:
 
 
 @dataclass(frozen=True)
+class KickEvent:
+    team: Team
+    phase: Literal["resolve"]
+    shot_direction: Direction
+    dive_direction: Direction
+    timing_quality: Optional[float]
+    scored: bool
+    score_a: int
+    score_b: int
+    message: str
+
+
+@dataclass(frozen=True)
 class ShootoutResult:
     winner: Team
     loser: Team
     score_a: int
     score_b: int
     kicks: tuple[Kick, ...]
+    events: tuple[KickEvent, ...] = ()
 
 
 @dataclass
@@ -125,6 +139,7 @@ class PenaltyShootoutEngine:
         shot_direction: Direction,
         keeper_dive: Direction,
         kick_number_for_shooter: int,
+        timing_quality: Optional[float] = None,
     ) -> bool:
         chance = 0.75
         chance += shooter.penalty_strength * 0.15
@@ -134,8 +149,34 @@ class PenaltyShootoutEngine:
             chance -= 0.10
         pressure_penalty = min(0.10, max(0.0, (kick_number_for_shooter - 1) * 0.015))
         chance -= pressure_penalty
+        if timing_quality is not None:
+            timing_quality = clamp(timing_quality, 0.0, 1.0)
+            chance += (timing_quality - 0.5) * 0.20
         chance = clamp(chance, 0.20, 0.95)
         return self.rng.random() < chance
+
+    def _build_kick_event(
+        self,
+        team: Team,
+        direction: Direction,
+        dive_direction: Direction,
+        timing_quality: Optional[float],
+        scored: bool,
+        score_a: int,
+        score_b: int,
+    ) -> KickEvent:
+        action = "scored" if scored else "missed"
+        return KickEvent(
+            team=team,
+            phase="resolve",
+            shot_direction=direction,
+            dive_direction=dive_direction,
+            timing_quality=timing_quality,
+            scored=scored,
+            score_a=score_a,
+            score_b=score_b,
+            message=f"{team.name} {action} ({score_a}-{score_b})",
+        )
 
     def shootout(
         self,
@@ -143,11 +184,18 @@ class PenaltyShootoutEngine:
         team_b: Team,
         chooser_a: Optional[Callable[[Team, Team, int], Direction]] = None,
         chooser_b: Optional[Callable[[Team, Team, int], Direction]] = None,
+        dive_chooser_a: Optional[Callable[[Team, Team, int], Direction]] = None,
+        dive_chooser_b: Optional[Callable[[Team, Team, int], Direction]] = None,
+        timing_chooser_a: Optional[Callable[[Team, Team, int], float]] = None,
+        timing_chooser_b: Optional[Callable[[Team, Team, int], float]] = None,
     ) -> ShootoutResult:
         chooser_a = chooser_a or (lambda *_: self.rng.choice(("left", "centre", "right")))
         chooser_b = chooser_b or (lambda *_: self.rng.choice(("left", "centre", "right")))
+        dive_chooser_a = dive_chooser_a or (lambda *_: self.rng.choice(("left", "centre", "right")))
+        dive_chooser_b = dive_chooser_b or (lambda *_: self.rng.choice(("left", "centre", "right")))
 
         kicks: list[Kick] = []
+        events: list[KickEvent] = []
         score_a = 0
         score_b = 0
         taken_a = 0
@@ -156,45 +204,53 @@ class PenaltyShootoutEngine:
         for _ in range(5):
             taken_a += 1
             dir_a = chooser_a(team_a, team_b, taken_a)
-            dive_b = self.rng.choice(("left", "centre", "right"))
-            scored_a = self.resolve_kick(team_a, team_b, dir_a, dive_b, taken_a)
+            dive_b = dive_chooser_b(team_b, team_a, taken_a)
+            timing_a = timing_chooser_a(team_a, team_b, taken_a) if timing_chooser_a is not None else None
+            scored_a = self.resolve_kick(team_a, team_b, dir_a, dive_b, taken_a, timing_a)
             score_a += int(scored_a)
             kicks.append(Kick(team_a, dir_a, dive_b, scored_a))
+            events.append(self._build_kick_event(team_a, dir_a, dive_b, timing_a, scored_a, score_a, score_b))
 
             if score_a > score_b + (5 - taken_b):
-                return ShootoutResult(team_a, team_b, score_a, score_b, tuple(kicks))
+                return ShootoutResult(team_a, team_b, score_a, score_b, tuple(kicks), tuple(events))
 
             taken_b += 1
             dir_b = chooser_b(team_b, team_a, taken_b)
-            dive_a = self.rng.choice(("left", "centre", "right"))
-            scored_b = self.resolve_kick(team_b, team_a, dir_b, dive_a, taken_b)
+            dive_a = dive_chooser_a(team_a, team_b, taken_b)
+            timing_b = timing_chooser_b(team_b, team_a, taken_b) if timing_chooser_b is not None else None
+            scored_b = self.resolve_kick(team_b, team_a, dir_b, dive_a, taken_b, timing_b)
             score_b += int(scored_b)
             kicks.append(Kick(team_b, dir_b, dive_a, scored_b))
+            events.append(self._build_kick_event(team_b, dir_b, dive_a, timing_b, scored_b, score_a, score_b))
 
             if score_b > score_a + (5 - taken_a):
-                return ShootoutResult(team_b, team_a, score_a, score_b, tuple(kicks))
+                return ShootoutResult(team_b, team_a, score_a, score_b, tuple(kicks), tuple(events))
             if score_a > score_b + (5 - taken_b):
-                return ShootoutResult(team_a, team_b, score_a, score_b, tuple(kicks))
+                return ShootoutResult(team_a, team_b, score_a, score_b, tuple(kicks), tuple(events))
 
         sudden_round = 5
         while True:
             sudden_round += 1
             dir_a = chooser_a(team_a, team_b, sudden_round)
-            dive_b = self.rng.choice(("left", "centre", "right"))
-            scored_a = self.resolve_kick(team_a, team_b, dir_a, dive_b, sudden_round)
+            dive_b = dive_chooser_b(team_b, team_a, sudden_round)
+            timing_a = timing_chooser_a(team_a, team_b, sudden_round) if timing_chooser_a is not None else None
+            scored_a = self.resolve_kick(team_a, team_b, dir_a, dive_b, sudden_round, timing_a)
             kicks.append(Kick(team_a, dir_a, dive_b, scored_a))
 
             dir_b = chooser_b(team_b, team_a, sudden_round)
-            dive_a = self.rng.choice(("left", "centre", "right"))
-            scored_b = self.resolve_kick(team_b, team_a, dir_b, dive_a, sudden_round)
+            dive_a = dive_chooser_a(team_a, team_b, sudden_round)
+            timing_b = timing_chooser_b(team_b, team_a, sudden_round) if timing_chooser_b is not None else None
+            scored_b = self.resolve_kick(team_b, team_a, dir_b, dive_a, sudden_round, timing_b)
             kicks.append(Kick(team_b, dir_b, dive_a, scored_b))
 
             score_a += int(scored_a)
             score_b += int(scored_b)
+            events.append(self._build_kick_event(team_a, dir_a, dive_b, timing_a, scored_a, score_a, score_b))
+            events.append(self._build_kick_event(team_b, dir_b, dive_a, timing_b, scored_b, score_a, score_b))
             if scored_a != scored_b:
                 winner = team_a if score_a > score_b else team_b
                 loser = team_b if winner == team_a else team_a
-                return ShootoutResult(winner, loser, score_a, score_b, tuple(kicks))
+                return ShootoutResult(winner, loser, score_a, score_b, tuple(kicks), tuple(events))
 
 
 def create_seeded_pairings(teams: Iterable[Team]) -> tuple[Match, ...]:

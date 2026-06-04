@@ -2,6 +2,12 @@
 
 Minimal MVP tournament simulation for the **Global Knockout Cup** concept.
 
+## Project instructions
+
+See [PROJECT_INSTRUCTIONS.md](PROJECT_INSTRUCTIONS.md) for the dev/designer workflow, feature rules, and roadmap toward the football RPG direction.
+
+For the real-time penalty game mode plan, see [REALTIME_PENALTY_MODE_DESIGN.md](REALTIME_PENALTY_MODE_DESIGN.md).
+
 ## Included
 
 - 211 generated national teams with seed, penalty strength, and goalkeeper rating
@@ -19,6 +25,32 @@ Minimal MVP tournament simulation for the **Global Knockout Cup** concept.
 
 ```bash
 python -m unittest discover -s tests -q
+```
+
+## Play real-time penalty mode
+
+```bash
+python realtime_penalty_mode.py
+```
+
+Optional reproducible auto-sim smoke test:
+
+```bash
+python realtime_penalty_mode.py --auto --seed 42
+```
+
+## Play featured-team tournament mode
+
+Play a full tournament where only your featured team's matches are real-time and all other matches auto-sim:
+
+```bash
+python tournament_featured_mode.py --featured-seed 1
+```
+
+Optional reproducible auto-run:
+
+```bash
+python tournament_featured_mode.py --featured-seed 1 --auto --seed 7
 ```
 
 ## Current game readiness
