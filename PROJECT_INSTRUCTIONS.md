@@ -78,3 +78,4 @@ This document is the shared working agreement for **Total World Cup**.
 - Optional seeded RNG input for reproducible designer playtests.
 - Upset-rate telemetry for balancing passes.
 - Real-time penalty mode vertical slice (single-match, terminal-first).
+- Replace placeholder team names with validated 211-entry nation dataset.

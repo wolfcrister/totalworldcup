@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from random import Random
 from typing import Callable, Iterable, Literal, Optional
 
@@ -14,6 +16,16 @@ class Team:
     region: str = ""
     penalty_strength: float = 0.5
     goalkeeper_rating: float = 0.5
+
+
+@dataclass(frozen=True)
+class NationEntry:
+    id: int
+    name: str
+    fifa_code: str
+    confederation: str
+    is_playable: bool
+    strength_tier: int
 
 
 @dataclass(frozen=True)
@@ -98,13 +110,81 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
-def generate_teams(count: int = 211) -> tuple[Team, ...]:
+def load_nation_dataset(
+    file_path: Optional[str] = None,
+    expected_playable_count: int = 211,
+) -> tuple[NationEntry, ...]:
+    dataset_path = Path(file_path) if file_path is not None else Path(__file__).resolve().parent / "data" / "nations.csv"
+    if not dataset_path.exists():
+        return tuple()
+
+    required_columns = {
+        "id",
+        "name",
+        "fifa_code",
+        "confederation",
+        "is_playable",
+        "strength_tier",
+    }
+    allowed_confederations = {"AFC", "CAF", "CONCACAF", "CONMEBOL", "OFC", "UEFA"}
+
+    with dataset_path.open("r", encoding="utf-8", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        if reader.fieldnames is None:
+            raise ValueError(f"Nation dataset has no header: {dataset_path}")
+        missing_columns = required_columns.difference(set(reader.fieldnames))
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            raise ValueError(f"Nation dataset missing required columns ({missing}): {dataset_path}")
+
+        entries: list[NationEntry] = []
+        for row in reader:
+            confederation = row["confederation"].strip()
+            if confederation not in allowed_confederations:
+                raise ValueError(f"Invalid confederation '{confederation}' for nation '{row['name']}'")
+
+            is_playable_raw = row["is_playable"].strip().lower()
+            if is_playable_raw not in {"true", "false"}:
+                raise ValueError(f"Invalid is_playable value '{row['is_playable']}' for nation '{row['name']}'")
+
+            entries.append(
+                NationEntry(
+                    id=int(row["id"]),
+                    name=row["name"].strip(),
+                    fifa_code=row["fifa_code"].strip().upper(),
+                    confederation=confederation,
+                    is_playable=is_playable_raw == "true",
+                    strength_tier=int(row["strength_tier"]),
+                )
+            )
+
+    playable_entries = [entry for entry in entries if entry.is_playable]
+    if len(playable_entries) != expected_playable_count:
+        raise ValueError(
+            f"Expected {expected_playable_count} playable nations, found {len(playable_entries)} in {dataset_path}"
+        )
+
+    names = [entry.name for entry in playable_entries]
+    fifa_codes = [entry.fifa_code for entry in playable_entries]
+    if len(names) != len(set(names)):
+        raise ValueError("Nation dataset contains duplicate nation names")
+    if len(fifa_codes) != len(set(fifa_codes)):
+        raise ValueError("Nation dataset contains duplicate FIFA codes")
+
+    return tuple(sorted(playable_entries, key=lambda entry: entry.id))
+
+
+def generate_teams(count: int = 211, nation_dataset_path: Optional[str] = None) -> tuple[Team, ...]:
+    nation_entries = load_nation_dataset(nation_dataset_path)
+    use_nation_names = len(nation_entries) >= count
+
     teams = []
     for seed in range(1, count + 1):
         strength = clamp(1.0 - ((seed - 1) / max(1, count - 1)), 0.0, 1.0)
+        team_name = nation_entries[seed - 1].name if use_nation_names else f"Nation {seed}"
         teams.append(
             Team(
-                name=f"Nation {seed}",
+                name=team_name,
                 seed=seed,
                 penalty_strength=strength,
                 goalkeeper_rating=clamp(strength * 0.9 + 0.05, 0.0, 1.0),

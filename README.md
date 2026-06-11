@@ -8,6 +8,8 @@ See [PROJECT_INSTRUCTIONS.md](PROJECT_INSTRUCTIONS.md) for the dev/designer work
 
 For the real-time penalty game mode plan, see [REALTIME_PENALTY_MODE_DESIGN.md](REALTIME_PENALTY_MODE_DESIGN.md).
 
+For the visual EXE roadmap and nation-list plan, see [VISUAL_EXE_AND_NATIONS_PLAN.md](VISUAL_EXE_AND_NATIONS_PLAN.md).
+
 ## Included
 
 - 211 generated national teams with seed, penalty strength, and goalkeeper rating
@@ -38,6 +40,58 @@ Optional reproducible auto-sim smoke test:
 ```bash
 python realtime_penalty_mode.py --auto --seed 42
 ```
+
+## Play visual penalty mode (Pygame)
+
+```bash
+python visual_penalty_game.py --mode single --featured-seed 1
+```
+
+Controls:
+- Shot direction: LEFT / RIGHT, ENTER to confirm
+- Timing: SPACE
+- Keeper dive: LEFT / DOWN / RIGHT, ENTER to confirm
+
+The shootout now alternates turns: you shoot, then you defend, and so on.
+
+## Play visual tournament mode (Pygame)
+
+```bash
+python visual_penalty_game.py --mode tournament --featured-seed 1
+```
+
+In tournament mode, featured-team matches are playable and all other matches are auto-simulated.
+At launch, you can select your team in-game before the tournament starts.
+From Round of 32 onward, a visual playoff tree is shown between rounds.
+After every round, a tournament results screen shows all match outcomes for that round.
+That screen now also includes a compact timeline panel with featured-team path and biggest upsets so far.
+
+Tournament results controls:
+- ENTER / SPACE: continue to the next stage
+- LEFT / RIGHT: switch round view
+- UP / DOWN: scroll match list in the selected round
+
+## Simplest way to run
+
+Default (visual tournament):
+
+```bash
+python play_game.py
+```
+
+Single visual match:
+
+```bash
+python play_game.py --single
+```
+
+Randomness:
+- Default: randomized each run.
+- Reproducible run: pass `--seed`, for example `python play_game.py --seed 7`.
+
+Windows double-click options:
+- Play Tournament.bat
+- Play Single Match.bat
 
 ## Play featured-team tournament mode
 

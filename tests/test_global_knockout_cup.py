@@ -1,6 +1,7 @@
 import unittest
 from random import Random
 from unittest.mock import patch
+from pathlib import Path
 
 from global_knockout_cup import (
     Kick,
@@ -12,11 +13,34 @@ from global_knockout_cup import (
     assign_regions_snake,
     generate_teams,
     get_project_status,
+    load_nation_dataset,
 )
 from tournament_featured_mode import run_featured_tournament
 
 
 class GlobalKnockoutCupTests(unittest.TestCase):
+    def test_fifa_nation_dataset_loads_and_validates(self):
+        nations = load_nation_dataset()
+
+        self.assertEqual(len(nations), 211)
+        self.assertEqual(len({nation.name for nation in nations}), 211)
+        self.assertEqual(len({nation.fifa_code for nation in nations}), 211)
+        self.assertTrue(all(nation.is_playable for nation in nations))
+
+    def test_generate_teams_uses_fifa_names_when_dataset_exists(self):
+        teams = generate_teams(8)
+
+        self.assertEqual(len(teams), 8)
+        self.assertEqual(teams[0].name, "Afghanistan")
+        self.assertEqual(teams[1].name, "Australia")
+        self.assertNotEqual(teams[0].name, "Nation 1")
+
+    def test_generate_teams_falls_back_when_dataset_missing(self):
+        missing_path = str(Path(__file__).resolve().parent / "does_not_exist.csv")
+        teams = generate_teams(3, nation_dataset_path=missing_path)
+
+        self.assertEqual([team.name for team in teams], ["Nation 1", "Nation 2", "Nation 3"])
+
     def test_shootout_ends_early_when_lead_is_unbeatable(self):
         team_a = Team("A", seed=1, penalty_strength=1.0, goalkeeper_rating=1.0)
         team_b = Team("B", seed=2, penalty_strength=0.0, goalkeeper_rating=0.0)
