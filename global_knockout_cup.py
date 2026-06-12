@@ -14,6 +14,10 @@ class Team:
     name: str
     seed: int
     region: str = ""
+    fifa_rank: int = 0
+    overall_rating: int = 70
+    shooting_rating: int = 70
+    reaction_rating: int = 70
     penalty_strength: float = 0.5
     goalkeeper_rating: float = 0.5
 
@@ -25,7 +29,11 @@ class NationEntry:
     fifa_code: str
     confederation: str
     is_playable: bool
+    fifa_rank: int
     strength_tier: int
+    overall_rating: int
+    shooting_rating: int
+    reaction_rating: int
 
 
 @dataclass(frozen=True)
@@ -69,8 +77,8 @@ class ShootoutResult:
 @dataclass
 class TournamentPlan:
     regions: dict[str, tuple[Team, ...]]
-    preliminary_matches: tuple[Match, ...]
-    preliminary_byes: tuple[Team, ...]
+    regional_preliminary: dict[str, tuple[Match, ...]]
+    regional_byes: dict[str, tuple[Team, ...]]
 
 
 @dataclass
@@ -108,6 +116,16 @@ def get_project_status() -> ProjectStatus:
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
+
+
+def _derive_team_ratings(fifa_rank: int, field_size: int) -> tuple[int, int, int, float, float]:
+    base_strength = clamp(1.0 - ((fifa_rank - 1) / max(1, field_size - 1)), 0.0, 1.0)
+    overall_rating = round(58 + base_strength * 34)
+    shooting_rating = round(56 + base_strength * 36)
+    reaction_rating = round(55 + base_strength * 35)
+    penalty_strength = clamp(0.30 + base_strength * 0.60, 0.0, 1.0)
+    goalkeeper_rating = clamp(0.28 + base_strength * 0.57, 0.0, 1.0)
+    return overall_rating, shooting_rating, reaction_rating, penalty_strength, goalkeeper_rating
 
 
 def load_nation_dataset(
@@ -154,7 +172,11 @@ def load_nation_dataset(
                     fifa_code=row["fifa_code"].strip().upper(),
                     confederation=confederation,
                     is_playable=is_playable_raw == "true",
+                    fifa_rank=int(row.get("fifa_rank", row["id"])),
                     strength_tier=int(row["strength_tier"]),
+                    overall_rating=int(row.get("overall_rating") or 0),
+                    shooting_rating=int(row.get("shooting_rating") or 0),
+                    reaction_rating=int(row.get("reaction_rating") or 0),
                 )
             )
 
@@ -171,7 +193,7 @@ def load_nation_dataset(
     if len(fifa_codes) != len(set(fifa_codes)):
         raise ValueError("Nation dataset contains duplicate FIFA codes")
 
-    return tuple(sorted(playable_entries, key=lambda entry: entry.id))
+    return tuple(sorted(playable_entries, key=lambda entry: (entry.fifa_rank, entry.id)))
 
 
 def generate_teams(count: int = 211, nation_dataset_path: Optional[str] = None) -> tuple[Team, ...]:
@@ -180,14 +202,31 @@ def generate_teams(count: int = 211, nation_dataset_path: Optional[str] = None) 
 
     teams = []
     for seed in range(1, count + 1):
-        strength = clamp(1.0 - ((seed - 1) / max(1, count - 1)), 0.0, 1.0)
-        team_name = nation_entries[seed - 1].name if use_nation_names else f"Nation {seed}"
+        nation_entry = nation_entries[seed - 1] if use_nation_names else None
+        fifa_rank = nation_entry.fifa_rank if nation_entry is not None else seed
+        overall_rating, shooting_rating, reaction_rating, penalty_strength, goalkeeper_rating = _derive_team_ratings(
+            fifa_rank,
+            count,
+        )
+        if nation_entry is not None and nation_entry.overall_rating > 0:
+            overall_rating = nation_entry.overall_rating
+        if nation_entry is not None and nation_entry.shooting_rating > 0:
+            shooting_rating = nation_entry.shooting_rating
+            penalty_strength = clamp(nation_entry.shooting_rating / 100.0, 0.0, 1.0)
+        if nation_entry is not None and nation_entry.reaction_rating > 0:
+            reaction_rating = nation_entry.reaction_rating
+            goalkeeper_rating = clamp(nation_entry.reaction_rating / 100.0, 0.0, 1.0)
+        team_name = nation_entry.name if nation_entry is not None else f"Nation {seed}"
         teams.append(
             Team(
                 name=team_name,
                 seed=seed,
-                penalty_strength=strength,
-                goalkeeper_rating=clamp(strength * 0.9 + 0.05, 0.0, 1.0),
+                fifa_rank=fifa_rank,
+                overall_rating=overall_rating,
+                shooting_rating=shooting_rating,
+                reaction_rating=reaction_rating,
+                penalty_strength=penalty_strength,
+                goalkeeper_rating=goalkeeper_rating,
             )
         )
     return tuple(teams)
@@ -349,13 +388,24 @@ class GlobalKnockoutCup:
 
     def create_tournament_plan(self) -> TournamentPlan:
         regions = assign_regions_snake(self.teams)
-        ordered = sorted(self.teams, key=lambda t: t.seed)
-        byes = tuple(team for team in ordered if team.seed <= 45)
-        preliminary_teams = tuple(team for team in ordered if team.seed > 45)
-        preliminary = tuple(
-            Match(m.team_a, m.team_b, "Preliminary Round") for m in create_seeded_pairings(preliminary_teams)
+        regional_preliminary: dict[str, tuple[Match, ...]] = {}
+        regional_byes: dict[str, tuple[Team, ...]] = {}
+        for region_name, region_teams in regions.items():
+            ordered = sorted(region_teams, key=lambda t: t.seed)
+            # Each region targets 32 teams entering R128. bye_count = 64 - region_size
+            # ensures preliminary winners + byes = 32 exactly.
+            bye_count = 64 - len(ordered)
+            regional_byes[region_name] = tuple(ordered[:bye_count])
+            prelim_teams = tuple(ordered[bye_count:])
+            regional_preliminary[region_name] = tuple(
+                Match(p.team_a, p.team_b, "Preliminary Round")
+                for p in create_seeded_pairings(prelim_teams)
+            )
+        return TournamentPlan(
+            regions=regions,
+            regional_preliminary=regional_preliminary,
+            regional_byes=regional_byes,
         )
-        return TournamentPlan(regions=regions, preliminary_matches=preliminary, preliminary_byes=byes)
 
     def play_match(
         self,
@@ -389,15 +439,28 @@ class GlobalKnockoutCup:
         rounds: dict[str, tuple[Match, ...]] = {}
 
         plan = self.create_tournament_plan()
-        rounds["Preliminary Round"] = plan.preliminary_matches
-        preliminary_winners = tuple(self.play_match(match, chooser_for_team) for match in plan.preliminary_matches)
 
-        phase1_128_teams = tuple(sorted((*plan.preliminary_byes, *preliminary_winners), key=lambda t: t.seed))
-        round_128_matches, round_64_teams = self._simulate_knockout_round(phase1_128_teams, "Round of 128")
-        rounds["Round of 128"] = round_128_matches
+        # Phase 1: Regional Preliminary — all regions played together, grouped by region.
+        all_prelim_matches = tuple(m for matches in plan.regional_preliminary.values() for m in matches)
+        rounds["Preliminary Round"] = all_prelim_matches
+        prelim_winners = tuple(self.play_match(m, chooser_for_team) for m in all_prelim_matches)
 
-        round_64_matches, qualified_32 = self._simulate_knockout_round(round_64_teams, "Round of 64")
-        rounds["Round of 64"] = round_64_matches
+        # Regional Round of 128 — each region's prelim winners + byes → 32 per region.
+        all_r128_matches: list[Match] = []
+        for region_name, region_byes in plan.regional_byes.items():
+            region_prelim_winners = tuple(w for w in prelim_winners if w.region == region_name)
+            r128_teams = tuple(sorted((*region_byes, *region_prelim_winners), key=lambda t: t.seed))
+            all_r128_matches.extend(Match(p.team_a, p.team_b, "Round of 128") for p in create_seeded_pairings(r128_teams))
+        rounds["Round of 128"] = tuple(all_r128_matches)
+        r128_winners = tuple(self.play_match(m, chooser_for_team) for m in all_r128_matches)
+
+        # Regional Round of 64 — 16 per region → 8 qualifiers per region = 32 total.
+        all_r64_matches: list[Match] = []
+        for region_name in plan.regions:
+            region_r128_winners = tuple(w for w in r128_winners if w.region == region_name)
+            all_r64_matches.extend(Match(p.team_a, p.team_b, "Round of 64") for p in create_seeded_pairings(region_r128_winners))
+        rounds["Round of 64"] = tuple(all_r64_matches)
+        qualified_32 = tuple(self.play_match(m, chooser_for_team) for m in all_r64_matches)
 
         current = qualified_32
         for round_name, winner_count in (

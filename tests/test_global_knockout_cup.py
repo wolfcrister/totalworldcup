@@ -25,21 +25,31 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         self.assertEqual(len(nations), 211)
         self.assertEqual(len({nation.name for nation in nations}), 211)
         self.assertEqual(len({nation.fifa_code for nation in nations}), 211)
+        self.assertEqual(len({nation.fifa_rank for nation in nations}), 211)
         self.assertTrue(all(nation.is_playable for nation in nations))
+        self.assertEqual(nations[0].name, "Argentina")
+        self.assertEqual(nations[-1].fifa_rank, 211)
 
     def test_generate_teams_uses_fifa_names_when_dataset_exists(self):
         teams = generate_teams(8)
 
         self.assertEqual(len(teams), 8)
-        self.assertEqual(teams[0].name, "Afghanistan")
-        self.assertEqual(teams[1].name, "Australia")
+        self.assertEqual(teams[0].name, "Argentina")
+        self.assertEqual(teams[1].name, "Spain")
         self.assertNotEqual(teams[0].name, "Nation 1")
+        self.assertEqual(teams[0].fifa_rank, 1)
+        self.assertGreaterEqual(teams[0].overall_rating, teams[-1].overall_rating)
+        self.assertGreaterEqual(teams[0].shooting_rating, teams[-1].shooting_rating)
+        self.assertGreaterEqual(teams[0].reaction_rating, teams[-1].reaction_rating)
 
     def test_generate_teams_falls_back_when_dataset_missing(self):
         missing_path = str(Path(__file__).resolve().parent / "does_not_exist.csv")
         teams = generate_teams(3, nation_dataset_path=missing_path)
 
         self.assertEqual([team.name for team in teams], ["Nation 1", "Nation 2", "Nation 3"])
+        self.assertEqual([team.fifa_rank for team in teams], [1, 2, 3])
+        self.assertGreater(teams[0].penalty_strength, teams[-1].penalty_strength)
+        self.assertGreater(teams[0].goalkeeper_rating, teams[-1].goalkeeper_rating)
 
     def test_shootout_ends_early_when_lead_is_unbeatable(self):
         team_a = Team("A", seed=1, penalty_strength=1.0, goalkeeper_rating=1.0)
@@ -166,11 +176,23 @@ class GlobalKnockoutCupTests(unittest.TestCase):
         plan = cup.create_tournament_plan()
 
         self.assertEqual(len(cup.teams), 211)
-        self.assertEqual(len(plan.preliminary_byes), 45)
-        self.assertEqual(len(plan.preliminary_matches), 83)
-        prelim_seeds = {team.seed for match in plan.preliminary_matches for team in (match.team_a, match.team_b)}
+        self.assertEqual(len(plan.regional_preliminary), 4)
+        self.assertEqual(len(plan.regional_byes), 4)
+
+        all_prelim_matches = tuple(m for matches in plan.regional_preliminary.values() for m in matches)
+        all_byes = tuple(t for byes in plan.regional_byes.values() for t in byes)
+        self.assertEqual(len(all_prelim_matches), 83)
+        self.assertEqual(len(all_byes), 45)
+
+        prelim_seeds = {team.seed for match in all_prelim_matches for team in (match.team_a, match.team_b)}
         self.assertEqual(min(prelim_seeds), 46)
         self.assertEqual(max(prelim_seeds), 211)
+
+        # Each region must produce exactly 8 qualifiers (32 total for Phase 2).
+        for region_name, region_byes in plan.regional_byes.items():
+            prelim_matches = plan.regional_preliminary[region_name]
+            r128_size = len(region_byes) + len(prelim_matches)  # prelim winners + byes
+            self.assertEqual(r128_size, 32, msg=f"Region {region_name} should have 32 teams entering R128")
 
         outcome = cup.run_tournament()
         self.assertEqual(len(outcome.phase1_qualified_32), 32)

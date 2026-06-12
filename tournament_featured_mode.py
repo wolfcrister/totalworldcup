@@ -74,15 +74,32 @@ def run_featured_tournament(
     rounds: dict[str, tuple[Match, ...]] = {}
 
     plan = cup.create_tournament_plan()
-    rounds["Preliminary Round"] = plan.preliminary_matches
-    preliminary_winners = _play_round(cup, plan.preliminary_matches, featured_team.seed, auto)
 
-    phase1_128_teams = tuple(sorted((*plan.preliminary_byes, *preliminary_winners), key=lambda t: t.seed))
-    round_128_matches = _round_matches_seeded(phase1_128_teams, "Round of 128")
+    # Phase 1 Preliminary — all regions together.
+    all_prelim_matches = tuple(m for matches in plan.regional_preliminary.values() for m in matches)
+    rounds["Preliminary Round"] = all_prelim_matches
+    preliminary_winners = _play_round(cup, all_prelim_matches, featured_team.seed, auto)
+
+    # Regional Round of 128.
+    all_r128_matches: list[Match] = []
+    for region_name, region_byes in plan.regional_byes.items():
+        region_prelim_winners = tuple(w for w in preliminary_winners if w.region == region_name)
+        r128_teams = tuple(sorted((*region_byes, *region_prelim_winners), key=lambda t: t.seed))
+        all_r128_matches.extend(
+            Match(p.team_a, p.team_b, "Round of 128") for p in create_seeded_pairings(r128_teams)
+        )
+    round_128_matches = tuple(all_r128_matches)
     rounds["Round of 128"] = round_128_matches
-    round_64_teams = _play_round(cup, round_128_matches, featured_team.seed, auto)
+    r128_winners = _play_round(cup, round_128_matches, featured_team.seed, auto)
 
-    round_64_matches = _round_matches_seeded(round_64_teams, "Round of 64")
+    # Regional Round of 64.
+    all_r64_matches: list[Match] = []
+    for region_name in plan.regions:
+        region_r128_winners = tuple(w for w in r128_winners if w.region == region_name)
+        all_r64_matches.extend(
+            Match(p.team_a, p.team_b, "Round of 64") for p in create_seeded_pairings(region_r128_winners)
+        )
+    round_64_matches = tuple(all_r64_matches)
     rounds["Round of 64"] = round_64_matches
     qualified_32 = _play_round(cup, round_64_matches, featured_team.seed, auto)
 
