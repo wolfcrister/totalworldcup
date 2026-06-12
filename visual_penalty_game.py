@@ -161,9 +161,9 @@ class VisualPenaltyGame:
         return LANE_LABELS[max(0, min(4, lane))]
 
     def _push_ticker_event(self, text: str) -> None:
-        self.ticker_events.insert(0, text)
+        self.ticker_events.append(text)
         if len(self.ticker_events) > 16:
-            self.ticker_events = self.ticker_events[:16]
+            self.ticker_events = self.ticker_events[-16:]
 
     def _slug(self, text: str) -> str:
         slug = "".join(ch if ch.isalnum() else "_" for ch in text)
@@ -271,10 +271,20 @@ class VisualPenaltyGame:
         # Unified meter meaning: centre is best, edges are worst.
         return clamp(1.0 - self._timing_error(timing_quality), 0.0, 1.0)
 
-    def _shot_drift(self, shooter: Team, timing_quality: float) -> int | None:
+    def _shot_lane_modifiers(self, intended_lane: int) -> tuple[float, float]:
+        # Center is safer (wider clean window), far lanes are riskier (tighter windows).
+        if intended_lane == 2:
+            return (1.20, 1.10)
+        if intended_lane in (0, 4):
+            return (0.78, 0.88)
+        return (1.00, 1.00)
+
+    def _shot_drift(self, shooter: Team, timing_quality: float, intended_lane: int) -> int | None:
         error = self._timing_error(timing_quality)
-        clean_threshold = clamp(0.22 + shooter.shooting_rating / 260.0, 0.32, 0.58)
-        drift_threshold = clamp(clean_threshold + 0.20, 0.52, 0.82)
+        base_clean_threshold = clamp(0.22 + shooter.shooting_rating / 260.0, 0.32, 0.58)
+        clean_mult, drift_mult = self._shot_lane_modifiers(intended_lane)
+        clean_threshold = clamp(base_clean_threshold * clean_mult, 0.20, 0.70)
+        drift_threshold = clamp((base_clean_threshold + 0.20) * drift_mult, 0.45, 0.88)
         if error <= clean_threshold:
             return 0
         if error <= drift_threshold:
@@ -291,8 +301,10 @@ class VisualPenaltyGame:
     def _shot_tier(self, timing_quality: float, intended_lane: int, shooter: Team | None = None) -> str:
         shooter = shooter or self._engine_player_team
         error = self._timing_error(timing_quality)
-        clean_threshold = clamp(0.22 + shooter.shooting_rating / 260.0, 0.32, 0.58)
-        drift_threshold = clamp(clean_threshold + 0.20, 0.52, 0.82)
+        base_clean_threshold = clamp(0.22 + shooter.shooting_rating / 260.0, 0.32, 0.58)
+        clean_mult, drift_mult = self._shot_lane_modifiers(intended_lane)
+        clean_threshold = clamp(base_clean_threshold * clean_mult, 0.20, 0.70)
+        drift_threshold = clamp((base_clean_threshold + 0.20) * drift_mult, 0.45, 0.88)
         if intended_lane == 2 and timing_quality == 0.5:
             return "Perfect"
         if error <= clean_threshold * 0.28:
@@ -310,9 +322,12 @@ class VisualPenaltyGame:
         error = self._timing_error(reaction_quality)
         clean_threshold = clamp(0.22 + goalkeeper.reaction_rating / 260.0, 0.32, 0.58)
         drift_threshold = clamp(clean_threshold + 0.20, 0.52, 0.82)
+        # Perfect requires exact centre — same strict gate as shooting.
         if reaction_quality == 0.5:
             return "Perfect"
-        if error <= clean_threshold * 0.28:
+        # Excellent window is tighter than shooting (x0.20 vs x0.28) so high-rated
+        # keepers don't dominate weak shooters just by being close to centre.
+        if error <= clean_threshold * 0.20:
             return "Excellent"
         if error <= clean_threshold:
             return "Great"
@@ -322,61 +337,59 @@ class VisualPenaltyGame:
             return "Ok"
         return "Bad"
 
-    def _save_probability(self, shot_tier: str, keeper_tier: str, lane_gap: int) -> float:
-        if shot_tier == "Perfect":
-            return 0.0
+    def _is_saved(self, shot_tier: str, keeper_tier: str, intended_lane: int, lane_gap: int) -> bool:
+        """Deterministic duel: outcome follows directly from tier matchup, lane family and gap.
 
-        # Keeper cannot save shots that are three or more lanes away.
+        Lane family (based on intended lane):
+          center (lane 2)  -- keeper-favoured; keeper needs to be 1 tier below shooter
+          near   (1, 3)    -- neutral; keeper needs equal tier
+          far    (0, 4)    -- shooter-favoured; keeper needs +1 tier above shooter
+
+        Required margin by (lane_family, gap):
+          gap 0  center:-1  near:0  far:+1
+          gap 1  center: 0  near:+1 far:+2
+          gap 2  center:+1  near:+2 far:+3   (effectively never at far)
+          gap 3+ always goal
+
+        Perfect-shot special rules:
+          far    -- always goal
+          near   -- always goal (P vs P: shooter wins)
+          center -- save only if keeper >= Excellent and gap == 0
+        """
+        tier_rank = {
+            "Bad": 0, "Ok": 1, "Good": 2, "Great": 3, "Excellent": 4, "Perfect": 5,
+        }
+        shot_rank  = tier_rank[shot_tier]
+        keeper_rank = tier_rank[keeper_tier]
+
         if lane_gap >= 3:
-            return 0.0
+            return False
 
-        # Base save chance by shot quality and keeper-lane match.
-        # Same lane should punish poor shots heavily, while adjacent saves are
-        # mostly for weaker shots.
-        same_lane_base = {
-            "Excellent": 0.24,
-            "Great": 0.42,
-            "Good": 0.60,
-            "Ok": 0.78,
-            "Bad": 0.88,
-        }
-        adjacent_base = {
-            "Excellent": 0.06,
-            "Great": 0.16,
-            "Good": 0.30,
-            "Ok": 0.44,
-            "Bad": 0.55,
-        }
-        keeper_adjust = {
-            "Perfect": 0.10,
-            "Excellent": 0.05,
-            "Great": 0.00,
-            "Good": -0.03,
-            "Ok": -0.07,
-            "Bad": -0.12,
-        }
+        if intended_lane == 2:
+            lane_family = "center"
+        elif intended_lane in (0, 4):
+            lane_family = "far"
+        else:
+            lane_family = "near"
 
-        two_lane_base = {
-            "Excellent": 0.01,
-            "Great": 0.06,
-            "Good": 0.12,
-            "Ok": 0.20,
-            "Bad": 0.28,
-        }
-        two_lane_keeper_adjust = {
-            "Perfect": 0.08,
-            "Excellent": 0.05,
-            "Great": 0.02,
-            "Good": 0.00,
-            "Ok": -0.03,
-            "Bad": -0.06,
-        }
+        if shot_tier == "Perfect":
+            if lane_family == "center" and lane_gap == 0:
+                return keeper_rank >= tier_rank["Excellent"]
+            return False
 
-        if lane_gap == 2:
-            return clamp(two_lane_base[shot_tier] + two_lane_keeper_adjust[keeper_tier], 0.0, 0.30)
-
-        base = same_lane_base[shot_tier] if lane_gap == 0 else adjacent_base[shot_tier]
-        return clamp(base + keeper_adjust[keeper_tier], 0.0, 0.98)
+        required_margin = {
+            ("center", 0): -1,
+            ("center", 1):  0,
+            ("center", 2):  1,
+            ("near",   0):  0,
+            ("near",   1):  2,
+            ("near",   2):  2,
+            ("far",    0):  1,
+            ("far",    1):  2,
+            ("far",    2):  3,
+        }
+        margin_needed = required_margin[(lane_family, lane_gap)]
+        return (keeper_rank - shot_rank) >= margin_needed
 
     def _timing_meter_speed(self) -> float:
         if self.current_phase == "player_timing":
@@ -384,9 +397,8 @@ class VisualPenaltyGame:
         else:
             skill_rating = self._engine_player_team.reaction_rating
 
-        # Better teams get a slightly slower meter, giving them a cleaner chance
-        # to line up a perfect shot or save.
-        return clamp(1.38 - skill_rating / 300.0, 0.88, 1.26)
+        # Keep meter intentionally fast; better ratings still slow it down a bit.
+        return clamp(2.35 - skill_rating / 165.0, 1.70, 2.25)
 
     def _resolve_lane_kick(
         self,
@@ -399,7 +411,7 @@ class VisualPenaltyGame:
     ) -> tuple[bool, int, bool]:
         shot_tier = self._shot_tier(timing_quality, intended_lane, shooter)
         keeper_tier = self._keeper_tier(reaction_quality, goalkeeper)
-        drift = self._shot_drift(shooter, timing_quality)
+        drift = self._shot_drift(shooter, timing_quality, intended_lane)
         if drift is None:
             self._last_resolution_debug = {
                 "shot_tier": shot_tier,
@@ -420,8 +432,7 @@ class VisualPenaltyGame:
                     "keeper_tier": keeper_tier,
                     "drift": drift,
                     "lane_gap": None,
-                    "save_probability": 0.0,
-                    "saved_roll": None,
+                    "saved": False,
                     "reason": "perfect_out_of_bounds",
                 }
                 return False, max(0, min(4, actual_lane)), True
@@ -430,8 +441,7 @@ class VisualPenaltyGame:
                 "keeper_tier": keeper_tier,
                 "drift": drift,
                 "lane_gap": abs(actual_lane - keeper_lane),
-                "save_probability": 0.0,
-                "saved_roll": None,
+                "saved": False,
                 "reason": "perfect_uncatchable",
             }
             return True, actual_lane, False
@@ -448,23 +458,18 @@ class VisualPenaltyGame:
                 "keeper_tier": keeper_tier,
                 "drift": drift,
                 "lane_gap": None,
-                "save_probability": 0.0,
-                "saved_roll": None,
+                "saved": False,
                 "reason": "drift_out_of_bounds",
             }
             return False, max(0, min(4, actual_lane)), True
 
         lane_gap = abs(actual_lane - keeper_lane)
-        save_probability = self._save_probability(shot_tier, keeper_tier, lane_gap)
-        saved_roll = self.rng.random()
-        saved = saved_roll < save_probability
+        saved = self._is_saved(shot_tier, keeper_tier, intended_lane, lane_gap)
         self._last_resolution_debug = {
             "shot_tier": shot_tier,
             "keeper_tier": keeper_tier,
             "drift": drift,
             "lane_gap": lane_gap,
-            "save_probability": round(save_probability, 4),
-            "saved_roll": round(saved_roll, 4),
             "saved": saved,
             "reason": "resolved",
         }
@@ -834,9 +839,14 @@ class VisualPenaltyGame:
         actor = self._engine_player_team
         skill_rating = actor.shooting_rating if self.current_phase == "player_timing" else actor.reaction_rating
 
-        # Compute thresholds from active role ratings using one shared center-based visual.
-        clean_threshold = clamp(0.22 + skill_rating / 260.0, 0.32, 0.58)
-        drift_threshold = clamp(clean_threshold + 0.20, 0.52, 0.82)
+        # Compute thresholds from active role ratings.
+        base_clean_threshold = clamp(0.22 + skill_rating / 260.0, 0.32, 0.58)
+        if self.current_phase == "player_timing":
+            clean_mult, drift_mult = self._shot_lane_modifiers(self._pending_lane)
+        else:
+            clean_mult, drift_mult = (1.0, 1.0)
+        clean_threshold = clamp(base_clean_threshold * clean_mult, 0.20, 0.70)
+        drift_threshold = clamp((base_clean_threshold + 0.20) * drift_mult, 0.45, 0.88)
         excellent_threshold = clean_threshold * 0.28
 
         # Meter track (dark base)
@@ -911,14 +921,6 @@ class VisualPenaltyGame:
         draw_row("YOU", self.player_kick_outcomes, top_y)
         draw_row("AI", self.ai_kick_outcomes, top_y + 28)
 
-        if self.taken_player > 5 or self.taken_ai > 5:
-            sudden = small_font.render(
-                f"Sudden death +{max(0, self.taken_player - 5)} / +{max(0, self.taken_ai - 5)}",
-                True,
-                GOLD,
-            )
-            screen.blit(sudden, (center_x - sudden.get_width() // 2, top_y + 52))
-
     def _draw_hud(self, screen: pygame.Surface, font: pygame.font.Font, small_font: pygame.font.Font) -> None:
         width, height = screen.get_size()
         left_x = 8
@@ -935,10 +937,10 @@ class VisualPenaltyGame:
         screen.blit(header_font.render("How To Play", True, ACCENT), (left_x + 12, panel_y + 10))
         instructions = [
             ("1) Pick lane with arrows, ENTER to lock", TEXT_COLOR),
-            ("2) Press SPACE on timing meter", TEXT_COLOR),
-            ("3) Center at 0.50 = Perfect (always goal)", GOOD),
-            ("4) 3+ lane gap = keeper cannot save", TEXT_COLOR),
-            ("5) 2-lane gap has only a small save chance", TEXT_COLOR),
+            ("2) Press SPACE when cursor is near center (0.50)", TEXT_COLOR),
+            ("3) Timing tiers: Perfect > Excellent > Great > Good > Ok > Bad", GOOD),
+            ("4) Lane families: Center=safer, Near=balanced, Far=risky but rewarding", TEXT_COLOR),
+            ("5) 3+ lane gap is always a goal", TEXT_COLOR),
         ]
         info_y = panel_y + 42
         for text, color in instructions:
@@ -948,14 +950,14 @@ class VisualPenaltyGame:
 
         mx = left_x + 12
         my = info_y + 14
-        screen.blit(header_font.render("Shot vs Keeper Matrix", True, ACCENT), (mx, my))
+        screen.blit(header_font.render("Tier Duel (Same Lane)", True, ACCENT), (mx, my))
         matrix_font = pygame.font.SysFont("consolas", 16, bold=True)
         headers = ["Shot", "Keeper", "Outcome"]
         cols = [mx, mx + 130, mx + 252]
         for idx, label in enumerate(headers):
             screen.blit(matrix_font.render(label, True, TEXT_COLOR), (cols[idx], my + 30))
         rows = [
-            ("Perfect", "Any", "Shooter", GOOD),
+            ("Perfect", "Any*", "Shooter", GOOD),
             ("Excellent", "Great", "Shooter", (78, 220, 118)),
             ("Great", "Great", "Even", (170, 196, 96)),
             ("Good", "Great", "Keeper", (210, 130, 26)),
@@ -968,7 +970,10 @@ class VisualPenaltyGame:
             screen.blit(matrix_font.render(keeper_label, True, color), (cols[1], y))
             screen.blit(matrix_font.render(edge_label, True, color), (cols[2], y))
 
-        legend_y = my + 194
+        footnote_y = my + 182
+        screen.blit(body_font.render("* Center-perfect can be saved on elite same-lane read", True, TEXT_COLOR), (mx, footnote_y))
+
+        legend_y = my + 210
         screen.blit(body_font.render("Tier meaning:", True, ACCENT), (mx, legend_y))
         for idx, (text, color) in enumerate([
             ("Excellent/Great: in-lane precision", TEXT_COLOR),
@@ -997,6 +1002,14 @@ class VisualPenaltyGame:
         screen.blit(player_meta, (right_x + 12, panel_y + 56))
         screen.blit(ai_meta, (right_x + 12, panel_y + 82))
 
+        if self.taken_player > 5 or self.taken_ai > 5:
+            sudden = small_font.render(
+                f"Sudden death +{max(0, self.taken_player - 5)} / +{max(0, self.taken_ai - 5)}",
+                True,
+                GOLD,
+            )
+            screen.blit(sudden, (right_x + 12, panel_y + 104))
+
         ticker_title_font = pygame.font.SysFont("consolas", 20, bold=True)
         ticker_line_font = pygame.font.SysFont("consolas", 16)
         ticker_top = panel_y + 124
@@ -1007,22 +1020,21 @@ class VisualPenaltyGame:
             empty = ticker_line_font.render("No events yet - take the first shot.", True, TEXT_COLOR)
             screen.blit(empty, (right_x + 20, ticker_top + 48))
         else:
-            y = ticker_top + 42
             max_lines = (panel_h - 196) // 18
-            drawn = 0
-            for idx, event in enumerate(self.ticker_events):
-                if drawn >= max_lines:
-                    break
+            all_lines: list[tuple[str, tuple[int, int, int]]] = []
+            for idx, event in enumerate(self.ticker_events, start=1):
                 color = GOOD if "GOAL" in event else (BAD if "SAVED" in event or "MISSED" in event or "WIDE" in event else TEXT_COLOR)
                 wrapped = self._wrap_text(ticker_line_font, event, right_w - 52)
                 for line_idx, chunk in enumerate(wrapped):
-                    if drawn >= max_lines:
-                        break
-                    prefix = f"{idx + 1:>2}. " if line_idx == 0 else "    "
-                    line = ticker_line_font.render(prefix + chunk, True, color)
-                    screen.blit(line, (right_x + 18, y))
-                    y += 18
-                    drawn += 1
+                    prefix = f"{idx:>2}. " if line_idx == 0 else "    "
+                    all_lines.append((prefix + chunk, color))
+
+            visible_lines = all_lines[-max_lines:]
+            y = ticker_top + 42
+            for line_text, line_color in visible_lines:
+                line = ticker_line_font.render(line_text, True, line_color)
+                screen.blit(line, (right_x + 18, y))
+                y += 18
 
         # Penalty spot indicators stay centered over the pitch.
         self._draw_penalty_spots(screen, small_font)
@@ -1038,8 +1050,9 @@ class VisualPenaltyGame:
         status_surf = small_font.render(self.last_message, True, (8, 12, 22))
         badge_w = status_surf.get_width() + 32
         badge_x = width // 2 - badge_w // 2
-        _draw_panel(screen, (badge_x, 12, badge_w, 40), (badge_color[0], badge_color[1], badge_color[2], 230), radius=20)
-        screen.blit(status_surf, (badge_x + 16, 20))
+        badge_y = max(132, height - 176)
+        _draw_panel(screen, (badge_x, badge_y, badge_w, 40), (badge_color[0], badge_color[1], badge_color[2], 230), radius=20)
+        screen.blit(status_surf, (badge_x + 16, badge_y + 8))
 
         # ── Match-over overlay ───────────────────────────────────────────
         if self.current_phase == "finished":
