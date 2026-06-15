@@ -14,6 +14,7 @@ class Team:
     name: str
     seed: int
     region: str = ""
+    flag_code: str = ""
     fifa_rank: int = 0
     overall_rating: int = 70
     shooting_rating: int = 70
@@ -27,6 +28,7 @@ class NationEntry:
     id: int
     name: str
     fifa_code: str
+    flag_code: str
     confederation: str
     is_playable: bool
     fifa_rank: int
@@ -170,6 +172,7 @@ def load_nation_dataset(
                     id=int(row["id"]),
                     name=row["name"].strip(),
                     fifa_code=row["fifa_code"].strip().upper(),
+                    flag_code=row["fifa_code"].strip().upper(),
                     confederation=confederation,
                     is_playable=is_playable_raw == "true",
                     fifa_rank=int(row.get("fifa_rank", row["id"])),
@@ -221,6 +224,7 @@ def generate_teams(count: int = 211, nation_dataset_path: Optional[str] = None) 
             Team(
                 name=team_name,
                 seed=seed,
+                flag_code=nation_entry.fifa_code if nation_entry is not None else "",
                 fifa_rank=fifa_rank,
                 overall_rating=overall_rating,
                 shooting_rating=shooting_rating,

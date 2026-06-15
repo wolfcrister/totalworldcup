@@ -31,6 +31,9 @@ GOLD = (255, 192, 38)
 
 DIRECTION_ORDER: tuple[Direction, ...] = ("left", "centre", "right")
 LANE_LABELS: tuple[str, ...] = ("F-L", "LEFT", "CENTRE", "RIGHT", "F-R")
+FLAG_DIR = Path(__file__).resolve().parent / "assets" / "flags"
+FLAG_EXTENSIONS: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
+_FLAG_SURFACE_CACHE: dict[tuple[str, int, int], pygame.Surface] = {}
 
 
 def _draw_panel(
@@ -93,6 +96,54 @@ def _team_rating_line(team: Team) -> str:
     )
 
 
+def _flag_path_for_code(flag_code: str) -> Path | None:
+    code = flag_code.strip().lower()
+    if not code:
+        return None
+    for extension in FLAG_EXTENSIONS:
+        candidate = FLAG_DIR / f"{code}{extension}"
+        if candidate.exists():
+            return candidate
+    for candidate in FLAG_DIR.glob(f"{code}.*"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _flag_surface(flag_code: str, size: tuple[int, int]) -> pygame.Surface | None:
+    if not flag_code:
+        return None
+    key = (flag_code.lower(), size[0], size[1])
+    cached = _FLAG_SURFACE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    path = _flag_path_for_code(flag_code)
+    if path is None:
+        return None
+
+    try:
+        image = pygame.image.load(str(path))
+        try:
+            image = image.convert_alpha()
+        except pygame.error:
+            image = image.convert()
+        image = pygame.transform.smoothscale(image, size)
+        _FLAG_SURFACE_CACHE[key] = image
+        return image
+    except pygame.error:
+        return None
+
+
+def _draw_flag(surface: pygame.Surface, flag_code: str, rect: tuple[int, int, int, int]) -> int:
+    flag = _flag_surface(flag_code, (rect[2], rect[3]))
+    if flag is None:
+        return 0
+    surface.blit(flag, (rect[0], rect[1]))
+    pygame.draw.rect(surface, PITCH_LINE, rect, width=1, border_radius=3)
+    return rect[2] + 6
+
+
 class VisualPenaltyGame:
     def __init__(self, player_team: Team, ai_team: Team, rng: Random, title: str = "Visual Penalty Shootout"):
         self.player_team = player_team
@@ -137,6 +188,7 @@ class VisualPenaltyGame:
             name=team.name,
             seed=team.seed,
             region=team.region,
+            flag_code=team.flag_code,
             fifa_rank=team.fifa_rank,
             overall_rating=team.overall_rating,
             shooting_rating=team.shooting_rating,
@@ -347,7 +399,7 @@ class VisualPenaltyGame:
 
         Required margin by (lane_family, gap):
           gap 0  center:-1  near:0  far:+1
-          gap 1  center: 0  near:+1 far:+2
+                    gap 1  center: 0  near:+2 far:+2
           gap 2  center:+1  near:+2 far:+3   (effectively never at far)
           gap 3+ always goal
 
@@ -548,7 +600,7 @@ class VisualPenaltyGame:
         keeper_tier = self._keeper_tier(reaction_quality, self._engine_ai_team)
         result_message = "PERFECT GOAL" if shot_tier == "Perfect" and scored else ("GOAL" if scored else ("WIDE" if off_target else "SAVED"))
         self._push_ticker_event(
-            f"YOU shot {shot_tier} ({self._lane_label(shot_lane)}) | AI save {keeper_tier} ({self._lane_label(keeper_lane)}) | {result_message}"
+            f"YOU shot {shot_tier} ({self._lane_label(shot_lane)}) | AI dive {keeper_tier} ({self._lane_label(keeper_lane)}) | {result_message}"
         )
         self._log_kick_event(
             side="player",
@@ -604,7 +656,7 @@ class VisualPenaltyGame:
         keeper_tier = self._keeper_tier(reaction_quality, self._engine_player_team)
         result_message = "AI PERFECT GOAL" if shot_tier == "Perfect" and scored else ("AI SCORED" if scored else ("AI MISSED" if off_target else "YOU SAVED"))
         self._push_ticker_event(
-            f"AI shot {shot_tier} ({self._lane_label(ai_lane)}) | YOU save {keeper_tier} ({self._lane_label(keeper_lane)}) | {result_message}"
+            f"AI shot {shot_tier} ({self._lane_label(ai_lane)}) | YOU dive {keeper_tier} ({self._lane_label(keeper_lane)}) | {result_message}"
         )
         self._log_kick_event(
             side="ai",
@@ -810,11 +862,23 @@ class VisualPenaltyGame:
         total_w = len(labels) * btn_w + (len(labels) - 1) * gap
         base_x = width // 2 - total_w // 2
         y = height - 66
+
+        cue_font = pygame.font.SysFont("consolas", 18, bold=True)
+        if self.current_phase == "player_direction":
+            cue_text = "YOU ARE SHOOTING  -  Pick shot lane"
+            cue_color = ACCENT
+        else:
+            cue_text = "YOU ARE KEEPING  -  Pick dive lane"
+            cue_color = KEEPER_COLOR
+        cue_surf = cue_font.render(cue_text, True, cue_color)
+        screen.blit(cue_surf, (width // 2 - cue_surf.get_width() // 2, y - 30))
+
         for idx, label in enumerate(labels):
             bx = base_x + idx * (btn_w + gap)
             is_selected = idx == self.selection_index
             if is_selected:
-                _draw_panel(screen, (bx, y, btn_w, btn_h), (ACCENT[0], ACCENT[1], ACCENT[2], 220), radius=8)
+                selected_color = ACCENT if self.current_phase == "player_direction" else KEEPER_COLOR
+                _draw_panel(screen, (bx, y, btn_w, btn_h), (selected_color[0], selected_color[1], selected_color[2], 220), radius=8)
                 txt_color = (8, 14, 24)
             else:
                 _draw_panel(screen, (bx, y, btn_w, btn_h), (20, 40, 30, 180), radius=8)
@@ -885,7 +949,11 @@ class VisualPenaltyGame:
         # Help text centred above meter
         is_shot = self.current_phase == "player_timing"
         help_label = "SPACE  —  Lock shot precision" if is_shot else "SPACE  —  Lock reaction timing"
+        role_label = "YOU SHOOTING vs AI KEEPER" if is_shot else "AI SHOOTING vs YOU KEEPER"
+        role_color = ACCENT if is_shot else KEEPER_COLOR
+        role_text = font.render(role_label, True, role_color)
         help_text = font.render(help_label, True, TEXT_COLOR)
+        screen.blit(role_text, (x + w // 2 - role_text.get_width() // 2, y - 54))
         screen.blit(help_text, (x + w // 2 - help_text.get_width() // 2, y - 32))
 
         early_text = font.render("EARLY", True, TEXT_COLOR)
@@ -999,31 +1067,67 @@ class VisualPenaltyGame:
         )
         screen.blit(title_surf, (right_x + 12, panel_y + 12))
         screen.blit(score_surf, (right_x + right_w - score_surf.get_width() - 14, panel_y + 12))
-        screen.blit(player_meta, (right_x + 12, panel_y + 56))
-        screen.blit(ai_meta, (right_x + 12, panel_y + 82))
+        player_flag_width = _draw_flag(screen, self.player_team.flag_code, (right_x + 12, panel_y + 56, 28, 20))
+        screen.blit(player_meta, (right_x + 12 + player_flag_width, panel_y + 56))
+        ai_flag_width = _draw_flag(screen, self.ai_team.flag_code, (right_x + 12, panel_y + 82, 28, 20))
+        screen.blit(ai_meta, (right_x + 12 + ai_flag_width, panel_y + 82))
 
+        context_y = panel_y + 104
         if self.taken_player > 5 or self.taken_ai > 5:
             sudden = small_font.render(
                 f"Sudden death +{max(0, self.taken_player - 5)} / +{max(0, self.taken_ai - 5)}",
                 True,
                 GOLD,
             )
-            screen.blit(sudden, (right_x + 12, panel_y + 104))
+            screen.blit(sudden, (right_x + 12, context_y))
+            context_y += 22
+
+        role_box_h = 50
+        _draw_panel(screen, (right_x + 12, context_y, right_w - 24, role_box_h), (10, 24, 48, 220), radius=8)
+        role_title = small_font.render("Current Kick", True, ACCENT)
+        if self.current_phase in ("player_direction", "player_timing"):
+            you_role, ai_role = "YOU: SHOOTER", "AI: KEEPER"
+            role_color = ACCENT
+        elif self.current_phase in ("ai_dive", "keeper_timing"):
+            you_role, ai_role = "YOU: KEEPER", "AI: SHOOTER"
+            role_color = KEEPER_COLOR
+        elif self.current_phase == "animate_shot" and self.current_animation is not None and self.current_animation.is_player_shot:
+            you_role, ai_role = "YOU: SHOOTER", "AI: KEEPER"
+            role_color = ACCENT
+        elif self.current_phase == "animate_shot" and self.current_animation is not None:
+            you_role, ai_role = "YOU: KEEPER", "AI: SHOOTER"
+            role_color = KEEPER_COLOR
+        else:
+            you_role, ai_role = "YOU: -", "AI: -"
+            role_color = TEXT_COLOR
+        role_line = small_font.render(f"{you_role}   |   {ai_role}", True, role_color)
+        screen.blit(role_title, (right_x + 20, context_y + 6))
+        screen.blit(role_line, (right_x + 20, context_y + 26))
 
         ticker_title_font = pygame.font.SysFont("consolas", 20, bold=True)
         ticker_line_font = pygame.font.SysFont("consolas", 16)
-        ticker_top = panel_y + 124
+        ticker_top = context_y + role_box_h + 10
         screen.blit(ticker_title_font.render("Match Ticker", True, ACCENT), (right_x + 12, ticker_top))
-        _draw_panel(screen, (right_x + 12, ticker_top + 30, right_w - 24, panel_h - 176), (6, 10, 26, 210), radius=8)
+        ticker_box_h = panel_h - (ticker_top - panel_y) - 22
+        _draw_panel(screen, (right_x + 12, ticker_top + 30, right_w - 24, ticker_box_h), (6, 10, 26, 210), radius=8)
 
         if not self.ticker_events:
             empty = ticker_line_font.render("No events yet - take the first shot.", True, TEXT_COLOR)
             screen.blit(empty, (right_x + 20, ticker_top + 48))
         else:
-            max_lines = (panel_h - 196) // 18
+            max_lines = max(1, (ticker_box_h - 18) // 18)
             all_lines: list[tuple[str, tuple[int, int, int]]] = []
             for idx, event in enumerate(self.ticker_events, start=1):
-                color = GOOD if "GOAL" in event else (BAD if "SAVED" in event or "MISSED" in event or "WIDE" in event else TEXT_COLOR)
+                if event.startswith("YOU shot"):
+                    color = ACCENT
+                elif event.startswith("AI shot"):
+                    color = KEEPER_COLOR
+                elif "GOAL" in event:
+                    color = GOOD
+                elif "SAVED" in event or "MISSED" in event or "WIDE" in event:
+                    color = BAD
+                else:
+                    color = TEXT_COLOR
                 wrapped = self._wrap_text(ticker_line_font, event, right_w - 52)
                 for line_idx, chunk in enumerate(wrapped):
                     prefix = f"{idx:>2}. " if line_idx == 0 else "    "
@@ -1043,7 +1147,9 @@ class VisualPenaltyGame:
         msg_lower = self.last_message.lower()
         if "win" in msg_lower or "goal" in msg_lower or "you saved" in msg_lower:
             badge_color = GOOD
-        elif self.current_phase in ("player_direction", "player_timing", "ai_dive", "keeper_timing"):
+        elif self.current_phase in ("ai_dive", "keeper_timing"):
+            badge_color = KEEPER_COLOR
+        elif self.current_phase in ("player_direction", "player_timing"):
             badge_color = ACCENT
         else:
             badge_color = BAD
@@ -1224,12 +1330,13 @@ def _select_featured_team(
                 pygame.draw.rect(screen, ACCENT, (list_x - 8, y - 2, min(900, width - list_x * 2), row_h + 2), width=1, border_radius=5)
             color = ACCENT if is_selected else TEXT_COLOR
             marker = ">" if is_selected else " "
+            flag_width = _draw_flag(screen, team.flag_code, (list_x + 20, y + 3, 24, 16))
             row = text_font.render(
                 f"{marker} {team.seed:>3}. {team.name:<22}  OVR {team.overall_rating:>2}  SHO {team.shooting_rating:>2}  GK {team.reaction_rating:>2}  {team.region}",
                 True,
                 color,
             )
-            screen.blit(row, (list_x, y))
+            screen.blit(row, (list_x + 24 + flag_width, y))
             y += row_h
 
         page_label = text_font.render(
@@ -1322,7 +1429,8 @@ def _show_playoff_bracket_screen(
                     _draw_panel(screen, (x - 4, y - 12, name_surf.get_width() + 10, 22), (ACCENT[0], ACCENT[1], ACCENT[2], 40), radius=4)
                 else:
                     name_surf = text_font.render(short_name(team), True, color)
-                screen.blit(name_surf, (x, y - 8))
+                flag_width = _draw_flag(screen, team.flag_code, (x - 24, y - 8, 18, 12))
+                screen.blit(name_surf, (x - 24 + flag_width, y - 8))
 
             label = text_font.render(round_name.replace("Round of ", "R"), True, ACCENT)
             screen.blit(label, (x, 112))
@@ -1498,13 +1606,18 @@ def _show_tournament_results_screen(
             for result in visible:
                 featured_row = result.team_a.seed == featured_team.seed or result.team_b.seed == featured_team.seed
                 row_color = ACCENT if featured_row else TEXT_COLOR
+                a_flag = result.team_a.flag_code.lower() if result.team_a.flag_code else ""
+                b_flag = result.team_b.flag_code.lower() if result.team_b.flag_code else ""
                 row_text = (
                     f"{result.match_number:>2}/{result.total_matches:<2} "
                     f"{_team_compact_label(result.team_a, 16):<16} {result.score_a}-{result.score_b} "
                     f"{_team_compact_label(result.team_b, 16):<16} W:{_team_compact_label(result.winner, 14)}"
                 )
-                rendered = line_font.render(shorten_to_width(line_font, row_text, left_w), True, row_color)
-                screen.blit(rendered, (left_x, y))
+                rendered = line_font.render(shorten_to_width(line_font, row_text, left_w - 60), True, row_color)
+                _draw_flag(screen, result.team_a.flag_code, (left_x, y + 3, 18, 12))
+                _draw_flag(screen, result.team_b.flag_code, (left_x + 186, y + 3, 18, 12))
+                _draw_flag(screen, result.winner.flag_code, (left_x + 388, y + 3, 18, 12))
+                screen.blit(rendered, (left_x + 24, y))
                 y += 24
 
             page = text_font.render(
